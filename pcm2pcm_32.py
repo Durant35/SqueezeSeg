@@ -20,6 +20,7 @@ from sensor_msgs.msg import PointCloud2, PointField
 import sensor_msgs.point_cloud2 as pc2
 
 from squeeze_seg import SqueezeSeg
+import time
 from tensorflow.contrib import predictor
 
 def hv_in_range(x, y, z, fov, fov_type='h'):
@@ -64,7 +65,8 @@ def pto_depth_map(velo_points, H=64, W=512, C=5, dtheta=np.radians(0.4), dphi=np
     Return:
     `depth_map`:the projected depth map of shape[H,W,C]
     """
-    x, y, z = velo_points[:, 0], velo_points[:, 1], velo_points[:, 2]
+    #velo_points[velo_points[:,4]<8]=0
+    x, y, z = velo_points[:, 1], velo_points[:, 0], velo_points[:, 2]
     d = np.sqrt(x ** 2 + y ** 2 + z**2)
     r = np.sqrt(x ** 2 + z ** 2)#sqrt(x^2+y^2)
     d[d==0]=0.000001
@@ -72,17 +74,18 @@ def pto_depth_map(velo_points, H=64, W=512, C=5, dtheta=np.radians(0.4), dphi=np
     phi = np.arcsin(x/r) #y/r
     # with the help of ROS velodyne driver, taking ring as the theta
     if velo_points.shape[-1]>4:
-        ring = velo_points[:,4]+16
+        ring = velo_points[:,4]+32
         theta_ = ring.astype(int)
     else:
         theta = np.arcsin(y/d)
-        theta_ = np.abs((theta/dtheta).astype(int)-5)
+        print (np.min((theta/dtheta)),np.max((theta/dtheta)))
+        theta_ = np.abs((theta/dtheta).astype(int)+40)
         theta_[theta_>=64]=63
 
     phi_ = np.abs((phi/dphi).astype(int)+255)
     phi_[phi_>=512]=511
     #print theta,phi,theta_.shape,phi_.shape
-    # print(np.min((phi/dphi)),np.max((phi/dphi)))
+    #print(np.min((phi/dphi)),np.max((phi/dphi)))
     #np.savetxt('./dump/'+'phi'+"dump.txt",(phi_).astype(np.float32), fmt="%f")
     #np.savetxt('./dump/'+'phi_'+"dump.txt",(phi/dphi).astype(np.float32), fmt="%f")
 
@@ -125,6 +128,7 @@ class squeezeseg_node(object):
         rospy.init_node('tasqueezeseg_node', anonymous=True)
         # listener
         rospy.Subscriber(self.lis_topic, PointCloud2, self.pcmsg_cb)
+        
         print 'now will listen : {}, and publish : {}'.format(self.lis_topic, self.pub_topic)
         # spin() simply keeps python from exiting until this node is stopped
         rospy.spin()
@@ -166,26 +170,38 @@ class squeezeseg_node(object):
         return [msg_pf1, msg_pf2, msg_pf3, msg_pf4, msg_pf5]
 
 
-
     def pcmsg_cb(self,data):
         # read points from pointcloud message `data`
-        pc = pc2.read_points(data, skip_nans=False, field_names=("x", "y", "z","intensity"))
+        pc = pc2.read_points(data, skip_nans=True, field_names=("x", "y", "z","intensity","ring"))
         # print data.fields
         # to conver pc into numpy.ndarray format
+        t1 = time.time()
         np_p = np.array(list(pc))
+        t2 = time.time()
+        print 'process time:{}'.format(t2-t1)
         # print np_p
+        np_p = np_p[np_p[:,2]<0]
         # perform fov filter by using hv_in_range
-        cond = hv_in_range(x=np_p[:,0],y=np_p[:,1],z=np_p[:,2],fov=[-45,45])
+        t1 = time.time()
+        cond = hv_in_range(x=np_p[:,1],y=np_p[:,0],z=np_p[:,2],fov=[-45,45])
+        t2 = time.time()
+        print 'filter time:{}'.format(t2-t1)
         # to rotate points according to calibrated points with velo2cam
-        np_p_ranged = np.stack((np_p[:,1],-np_p[:,2],np_p[:,0],np_p[:,3])).T
+        t1 = time.time() 
+        np_p_ranged = np.stack((np_p[:,2],np_p[:,0],np_p[:,1],np_p[:,3],np_p[:,4])).T
         np_p_ranged = np_p_ranged[cond]
- 
+        t2 = time.time()
+        print 'stack time:{}'.format(t2-t1)
         # get depth map
+        t1 = time.time()
         dep_map = pto_depth_map(velo_points=np_p_ranged,C=5).astype(np.float32)
         #normalize intensity from [0,255] to [0,1], as shown in KITTI dataset
-        #dep_map[:,:,0] = (dep_map[:,:,0]-0)/np.max(dep_map[:,:,0])
+        #print np.min(dep_map[:,:,0]),np.max(dep_map[:,:,0])
+        dep_map[:,:,0] = (dep_map[:,:,0]-0)/255.0#np.max(dep_map[:,:,0])
+        t2 = time.time()
+        print 'project time:{}'.format(t2-t1)
         #dep_map = cv2.resize(src=dep_map,dsize=(512,64))
-
+        t1 = time.time()
         # to perform prediction
         features={'x':[dep_map]}
         predictions = self.fast_predict(features)
@@ -199,7 +215,9 @@ class squeezeseg_node(object):
         # set all labelled object point into 255, as intensity, for display
         l[l!=0]=255
         l=l.reshape(-1)
-        #print np.count_nonzero(l)
+        t2 = time.time()
+        print 'predict time:{}'.format(t2-t1)
+        print np.count_nonzero(l)
         # condition filter for filter out those object points
         cond=(l==255)
         ## to reproject points from depth map into 3D pointcloud
@@ -210,20 +228,22 @@ class squeezeseg_node(object):
         # print x.shape,y.shape,z.shape,l.shape
         # r=dep_map[:,:,0].astype(np.uint16)
         
-
+        t1 = time.time()
         # Create 4 PointFields as channel description
         # stack points
+        #ppp = np.stack((-x,y,z,i))
         ppp = np.stack((-x[cond],y[cond],z[cond],l[cond]))
 
         # create pointcloud2 message 
         new_header = data.header
         new_header.frame_id = 'class_velodyne'
         new_header.stamp = rospy.Time()
-        # in this case, the following tf fits
-        # rosrun tf static_transform_publisher 0 0 0 -1.57 0 -1.57 /velodyne /class_velodyne 100
+        # in this case, the tf:
+        # `rosrun tf static_transform_publisher 0 0 0 3.14 0 1.57 /velodyne /class_velodyne 100` works
         # point_field = [x,y,z,intensity,ring(optional)]
         pc_ranged = pc2.create_cloud(header=new_header,fields=self.point_field,points=ppp.T)
-
+        t2 = time.time()
+        print 'publish time:{}'.format(t2-t1)
         # saving PCD file
         # pcd =ppp.reshape(4,-1)
         # print pcd.shape,'hahah'
