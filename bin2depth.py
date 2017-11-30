@@ -119,27 +119,42 @@ class box3d(object):
         h,w,l = np.array(str_list[8:11]).astype(float)
         x,y,z = np.array(str_list[11:14]).astype(float)
         rot = np.array(str_list[14]).astype(float)
-        p1 = np.array([x-0.5*w,y,z-0.5*l])
-        p2 = np.array([x-0.5*w,y,z+0.5*l])
-        p4 = np.array([x+0.5*w,y,z-0.5*l])
-        p5 = np.array([x-0.5*w,y-h,z-0.5*l])
+
+        px = np.array([0.5*l,0.5*l,-0.5*l,-0.5*l, 0.5*l,0.5*l,-0.5*l,-0.5*l])
+        py = np.array([0,0,0,0, -h,-h,-h,-h])
+        pz = np.array([0.5*w,-0.5*w,-0.5*w,0.5*w, 0.5*w, -0.5*w, -0.5*w,0.5*w])
         rot_mat = np.array([
-            [np.cos(rot), -np.sin(rot), 0],
-            [np.sin(rot), np.cos(rot), 0],
-            [0, 0, 1]
+            [np.cos(rot), 0, np.sin(rot)],
+            [0, 1, 0],
+            [-np.sin(rot), 0, np.cos(rot)],
+            
         ])
         
-  
-        p_stack = np.array([p1,p2,p4,p5])
+        p_stack = np.array([px,py,pz])
         #np.savetxt('./dump/'+'box'+str(rot)+"dump.xyz",p_stack, fmt="%f %f %f")
-
-        p_stack -= np.array([x, y, z])
         # #print (p_stack)
-        rot_p = p_stack.dot(rot_mat)
-        rot_p += np.array([x, y, z])
-        #print (rot_p)
-        p_stack_rot = np.array([rot_p[0],rot_p[1],rot_p[2],rot_p[3]])
-        #np.savetxt('./dump/'+'rot_box'+str(rot)+"dump.xyz",p_stack, fmt="%f %f %f")
+        rot_p = np.dot(rot_mat,p_stack)
+        rot_p[0,:] = rot_p[0,:]+x
+        rot_p[1,:] = rot_p[1,:]+y
+        rot_p[2,:] = rot_p[2,:]+z
+        
+        # header1=('# .PCD v.7 - Point Cloud Data file format\n'
+        # 'VERSION .7\n'
+        # 'FIELDS x y z\n'
+        # 'SIZE 4 4 4\n'
+        # 'TYPE F F F\n'
+        # 'COUNT 1 1 1\n'
+        # 'WIDTH '+str(8)+'\n'
+        # 'HEIGHT 1\n'
+        # 'VIEWPOINT 0 0 0 1 0 0 0\n'
+        # 'POINTS '+str(8)+'\n'
+        # 'DATA bin\n')
+        # np.savetxt('./'+'box'+str(x)+'.pcd',rot_p.T,fmt='%f %f %f',header=header1,comments='')
+
+        p1 = rot_p[:,0]
+        p2 = rot_p[:,1]
+        p4 = rot_p[:,3]
+        p5 = rot_p[:,4]
         self.__init__(p1,p2,p4,p5)
         # TODO: (vincent.cheung.mcer@gmail.com) Adding support to rotate
         #self.__init__(rot_p[0],rot_p[1],rot_p[2],rot_p[3])
