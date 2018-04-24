@@ -14,7 +14,6 @@ import random
 from glob import glob
 import cv2
 
-
 class SqueezeSeg(object):
     """
     SqueezeSeg class.
@@ -389,7 +388,6 @@ def eval(argv):
 
     print('data get')
 
-
     # Evaluate the model and print results
     eval_input_fn = tf.estimator.inputs.numpy_input_fn(
         x={"x": eval_data},
@@ -440,8 +438,6 @@ def eval(argv):
         #cv2.imwrite('./test/'+str(idx)+'.png',mat)
         #cv2.waitKey(0)
         #print mat!=0
-        
-    
 
 
 if __name__ == '__main__':

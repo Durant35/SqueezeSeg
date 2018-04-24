@@ -22,6 +22,8 @@ import sensor_msgs.point_cloud2 as pc2
 from squeeze_seg import SqueezeSeg
 from tensorflow.contrib import predictor
 
+from clock import Clock
+
 def hv_in_range(x, y, z, fov, fov_type='h'):
     """ 
     Extract filtered in-range velodyne coordinates based on azimuth & elevation angle limit 
@@ -103,7 +105,7 @@ class squeezeseg_node(object):
     """
     Squeeze-Seg ros node. 
     """
-    def __init__(self, lis_topic='/velodyne_points', pub_topic='/class_topic', field_num=4):
+    def __init__(self, sub_topic='/velodyne_points', pub_topic='/class_topic', field_num=4):
         """
         Init function.
 
@@ -114,20 +116,22 @@ class squeezeseg_node(object):
         Raise:
 
         """
-        self.lis_topic = lis_topic
+        self.sub_topic = sub_topic
         self.pub_topic = pub_topic
         self.point_field = self.make_point_field(field_num)
         # load estimator saved model as serving predictor
         self.fast_predict = predictor.from_saved_model('./squeeze_seg/saved/')
         # publisher
-        self.pcmsg_pub = rospy.Publisher(self.pub_topic, PointCloud2,queue_size=1)
+        self.pcmsg_pub = rospy.Publisher(self.pub_topic, PointCloud2, queue_size=1)
         # ros node init
-        rospy.init_node('tasqueezeseg_node', anonymous=True)
+        rospy.init_node('squeezeseg_node', anonymous=True)
         # listener
-        rospy.Subscriber(self.lis_topic, PointCloud2, self.pcmsg_cb)
-        print 'now will listen : {}, and publish : {}'.format(self.lis_topic, self.pub_topic)
+        rospy.Subscriber(self.sub_topic, PointCloud2, self.pcmsg_cb)
+        rospy.loginfo("squeezeseg_node started.")
+        rospy.loginfo("listening on topic: %s and publish: %s", self.sub_topic, self.pub_topic)
         # spin() simply keeps python from exiting until this node is stopped
         rospy.spin()
+
     def make_point_field(self, num_field):
         # get from data.fields
         msg_pf1 = pc2.PointField()
@@ -165,10 +169,18 @@ class squeezeseg_node(object):
 
         return [msg_pf1, msg_pf2, msg_pf3, msg_pf4, msg_pf5]
 
+    def pcmsg_cb(self, data):
+        """
+        Point cloud callback function
 
+        @param data: raw point cloud in
+        @return: publish care point cloud in self.pub_topic topic
+        """
+        clock = Clock()
 
-    def pcmsg_cb(self,data):
         # read points from pointcloud message `data`
+        rospy.logwarn("subscribed. width: %d, height: %u, point_step: %d, row_step: %d", data.width, data.height, data.point_step, data.row_step)
+
         pc = pc2.read_points(data, skip_nans=False, field_names=("x", "y", "z","intensity"))
         # print data.fields
         # to conver pc into numpy.ndarray format
@@ -179,7 +191,7 @@ class squeezeseg_node(object):
         # to rotate points according to calibrated points with velo2cam
         np_p_ranged = np.stack((np_p[:,1],-np_p[:,2],np_p[:,0],np_p[:,3])).T
         np_p_ranged = np_p_ranged[cond]
- 
+
         # get depth map
         dep_map = pto_depth_map(velo_points=np_p_ranged,C=5).astype(np.float32)
         #normalize intensity from [0,255] to [0,1], as shown in KITTI dataset
@@ -209,21 +221,20 @@ class squeezeseg_node(object):
         i=dep_map[:,:,0].reshape(-1)
         # print x.shape,y.shape,z.shape,l.shape
         # r=dep_map[:,:,0].astype(np.uint16)
-        
+
 
         # Create 4 PointFields as channel description
         # stack points
         ppp = np.stack((-x[cond],y[cond],z[cond],l[cond]))
 
-        # create pointcloud2 message 
+        # create pointcloud2 message
         new_header = data.header
-        new_header.frame_id = 'class_velodyne'
+        new_header.frame_id = 'velodyne'
         new_header.stamp = rospy.Time()
         # in this case, the following tf fits
         # rosrun tf static_transform_publisher 0 0 0 -1.57 0 -1.57 /velodyne /class_velodyne 100
         # point_field = [x,y,z,intensity,ring(optional)]
         pc_ranged = pc2.create_cloud(header=new_header,fields=self.point_field,points=ppp.T)
-
         # saving PCD file
         # pcd =ppp.reshape(4,-1)
         # print pcd.shape,'hahah'
@@ -240,15 +251,16 @@ class squeezeseg_node(object):
         #     'DATA ascii\n')
         # print header
         # np.savetxt('./xyz_raw_2/'+str(num)+'_'+str(data.header.stamp)+'.pcd',pcd.T,fmt='%f %f %f %f',header=header,comments='')
-        
-        
+
         self.pcmsg_pub.publish(pc_ranged)
+        rospy.logwarn("published. width: %d, height: %u, point_step: %d, row_step: %d", pc_ranged.width, pc_ranged.height, pc_ranged.point_step, pc_ranged.row_step)
+        rospy.logerr("Point cloud processed. Take %.6f ms.", clock.takeRealTime())
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='pointcloud message semantic classfier')
-    parser.add_argument('--lis_topic', type=str, help='the pointcloud message topic to be listenned, default `/velodyne_points`', default='/velodyne_points')
-    parser.add_argument('--pub_topic', type=str, help='the pointcloud message topic to be listenned, default `/class_topic`', default='/class_topic')
+    parser.add_argument('--sub_topic', type=str, help='the pointcloud message topic to be subscribed, default `/kitti/points_raw`', default='/kitti/points_raw')
+    parser.add_argument('--pub_topic', type=str, help='the pointcloud message topic to be published, default `/squeeze_seg/points`', default='/squeeze_seg/points')
     #parser.add_argument('--dataset', type=str, choices=('training', 'testing'), help='Which dataset to run on', default='training')
     args = parser.parse_args()
-    node = squeezeseg_node(lis_topic=args.lis_topic,pub_topic=args.pub_topic)
+    node = squeezeseg_node(sub_topic=args.sub_topic, pub_topic=args.pub_topic)
     print 'finish'
